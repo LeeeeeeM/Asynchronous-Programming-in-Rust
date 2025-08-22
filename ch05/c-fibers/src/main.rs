@@ -1,13 +1,8 @@
-/// FIX #31:
-/// Inline assembly blocks inside naked functions now need to use
-/// the `naked_asm` macro instead of the good old `asm` macro.
-/// The `noreturn` option is implicitly set by the `naked_asm`
-/// macro so there is no need to set that.
-///
+
+// #![feature(naked_functions)]
+use std::arch::{asm, naked_asm};
 /// See: https://github.com/PacktPublishing/Asynchronous-Programming-in-Rust/issues/31
 /// for more information.
-#![feature(naked_functions)]
-use std::arch::{asm, naked_asm};
 
 const DEFAULT_STACK_SIZE: usize = 1024 * 1024 * 2;
 const MAX_THREADS: usize = 4;
@@ -26,7 +21,9 @@ enum State {
 }
 
 struct Thread {
+    // 存储栈信息
     stack: Vec<u8>,
+    // 存储寄存器状态
     ctx: ThreadContext,
     state: State,
 }
@@ -147,7 +144,7 @@ fn guard() {
     };
 }
 
-#[naked]
+#[unsafe(naked)]
 unsafe extern "C" fn skip() {
     naked_asm!("ret")
 }
@@ -159,10 +156,11 @@ pub fn yield_thread() {
     };
 }
 
-#[naked]
+#[unsafe(naked)]
 #[no_mangle]
 #[cfg_attr(target_os = "macos", export_name = "\x01switch")] // see: How-to-MacOS-M.md for explanation
 unsafe extern "C" fn switch() {
+    // 两个线程对象切换，老线程context保存到context，将新的线程 context 灌进去
     naked_asm!(
         "mov [rdi + 0x00], rsp",
         "mov [rdi + 0x08], r15",
@@ -178,10 +176,10 @@ unsafe extern "C" fn switch() {
         "mov r12, [rsi + 0x20]",
         "mov rbx, [rsi + 0x28]",
         "mov rbp, [rsi + 0x30]",
+        // 地址出栈,并跳到对应的指令位置开始执行
         "ret"
     );
 }
-
 fn main() {
     let mut runtime = Runtime::new();
     runtime.init();
@@ -189,7 +187,7 @@ fn main() {
     runtime.spawn(|| {
         println!("THREAD 1 STARTING");
         let id = 1;
-        for i in 0..10 {
+        for i in 0..2 {
             println!("thread: {} counter: {}", id, i);
             yield_thread();
         }
@@ -199,7 +197,7 @@ fn main() {
     runtime.spawn(|| {
         println!("THREAD 2 STARTING");
         let id = 2;
-        for i in 0..15 {
+        for i in 0..2 {
             println!("thread: {} counter: {}", id, i);
             yield_thread();
         }

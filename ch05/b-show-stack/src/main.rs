@@ -33,8 +33,8 @@ fn main() {
 
         for i in 0..SSIZE {
             println!(
-                "mem: {}, val: {}",
-                sb_aligned.offset(-i as isize) as usize,
+                "mem: {:?}, val: {}",
+                sb_aligned.offset(-i as isize) as *const u8,
                 *sb_aligned.offset(-i as isize)
             )
         }
