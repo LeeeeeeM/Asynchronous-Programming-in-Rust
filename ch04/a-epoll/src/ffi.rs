@@ -23,7 +23,7 @@ extern "C" {
 #[derive(Debug)]
 #[repr(C)]
 // FIX #5
-#[cfg_attr(target_arch = "x86_64", repr(packed))]
+// #[cfg_attr(target_arch = "x86_64", repr(packed))]
 pub struct Event {
     pub(crate) events: u32,
     // Token to identify event

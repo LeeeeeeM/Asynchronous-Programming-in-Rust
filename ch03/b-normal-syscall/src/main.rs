@@ -20,7 +20,9 @@ extern "C" {
 fn syscall(message: String) -> io::Result<()> {
     let msg_ptr = message.as_ptr();
     let len = message.len();
-    let res = unsafe { write(1, msg_ptr, len) };
+    let res = unsafe { 
+        write(1, msg_ptr, len) 
+    };
 
     if res == -1 {
         return Err(io::Error::last_os_error());
@@ -50,25 +52,22 @@ extern "system" {
 
 #[cfg(target_os = "windows")]
 fn syscall(message: String) -> io::Result<()> {
-
     // let's convert our utf-8 to a format windows understands
     let msg: Vec<u16> = message.encode_utf16().collect();
     let msg_ptr = msg.as_ptr();
     let len = msg.len() as u32;
 
     let mut output: u32 = 0;
-        let handle = unsafe { GetStdHandle(-11) };
-        if handle  == -1 {
-            return Err(io::Error::last_os_error())
-        }
+    let handle = unsafe { GetStdHandle(-11) };
+    if handle == -1 {
+        return Err(io::Error::last_os_error());
+    }
 
-        let res = unsafe {
-            WriteConsoleW(handle, msg_ptr, len, &mut output, std::ptr::null())
-            };
-        if res  == 0 {
-            return Err(io::Error::last_os_error());
-        }
-    
+    let res = unsafe { WriteConsoleW(handle, msg_ptr, len, &mut output, std::ptr::null()) };
+    if res == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
     // Just assert that the output variable we wrote all the bytes we expected
     // and panic if we didn't
     assert_eq!(output, len);
