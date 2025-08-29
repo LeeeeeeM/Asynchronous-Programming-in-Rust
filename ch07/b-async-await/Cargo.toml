@@ -7,3 +7,7 @@ edition = "2021"
 
 [dependencies]
 mio = { version = "0.8.8", features = ["net", "os-poll"] }
+
+[[bin]]
+name = "app"
+path = "src/main_corofied.rs"

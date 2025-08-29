@@ -1,8 +1,13 @@
+// 在文件开头添加格式化相关的导入
 use once_cell::sync::OnceCell;
 use std::error::Error;
 use std::fmt::{Display, Write as WriteFmt};
 use std::fs::File;
 use std::io::Write;
+
+// 添加格式化相关的导入
+use prettyplease::unparse;
+use syn::parse_file;
 
 const FN_KW: &str = "coroutine";
 const W_KW: &str = "wait";
@@ -12,6 +17,7 @@ fn l_trm_len() -> usize {
     *L_TRM_LN.get().expect("Line terminator len not set")
 }
 
+// 修改rewrite函数，添加格式化功能
 pub fn rewrite(src: String, dest: File) -> Result<(), impl Display> {
     detect_line_ending(&src);
     let mut dest = dest;
@@ -49,30 +55,43 @@ pub fn rewrite(src: String, dest: File) -> Result<(), impl Display> {
         async_start_end.push((start, end));
     }
 
-    // Write everything except the async functions back to the file
-    // (we put the rewritten code last in the file since it's easier
-    // to see)
+    // 创建一个字符串变量来收集所有内容
+    let mut all_content = String::new();
+    
+    // 收集所有非协程函数的代码
     let mut pos_tracker = 0;
     for (start, end) in &async_start_end {
-        dest.write_all(&src[pos_tracker..*start].as_bytes())
-            .unwrap();
+        all_content.push_str(&src[pos_tracker..*start]);
         pos_tracker = *end;
     }
-    // Write everything after the last async fn
-    dest.write_all(&src[pos_tracker..].as_bytes()).unwrap();
+    // 收集最后一个异步函数之后的代码
+    all_content.push_str(&src[pos_tracker..]);
 
-    // transform the async functions and write them to the file
-
+    // 转换并收集每个协程函数的代码
     for (i, (start, end)) in async_start_end.into_iter().enumerate() {
         let id = i.to_string();
 
         let async_fn = String::from(&src[start..end - 1]);
 
-        // transfrom the async fn
+        // 转换协程函数
         let transformed = transform(&async_fn, &id);
 
-        // Write the coroutine implementation to file
-        dest.write_all(transformed.as_bytes()).unwrap();
+        // 收集转换后的协程函数代码
+        all_content.push_str(&transformed);
+    }
+
+    // 添加格式化逻辑
+    match parse_file(&all_content) {
+        Ok(ast) => {
+            // 格式化代码
+            let formatted_code = unparse(&ast);
+            // 写入格式化后的代码
+            dest.write_all(formatted_code.as_bytes()).unwrap();
+        },
+        Err(_) => {
+            // 如果格式化失败，回退到原始转换的代码
+            dest.write_all(all_content.as_bytes()).unwrap();
+        }
     }
 
     Ok(())
