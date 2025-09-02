@@ -437,3 +437,39 @@ let file_executor = Executor::new();
 这种设计比当前代码更加灵活，可以实现真正的多线程任务执行，同时保持高效的 I/O 处理。当前代码虽然使用了全局就绪队列，但 Waker 仍然绑定到特定线程，限制了扩展性。
 
 这种设计展示了 Rust 异步编程的底层实现原理，是学习 Tokio 等异步运行时内部工作机制的绝佳资源。
+
+## 高级架构 Demo
+
+为了展示多 Executor 和多 Reactor 架构的实际应用，我们还提供了一个完整的高级架构实现：
+
+### 运行方式
+
+```bash
+# 运行原始架构演示
+cargo run --bin app
+
+# 运行高级架构演示  
+cargo run --bin advanced
+```
+
+### 高级架构特性
+
+- **多 Executor**: 网络执行器、文件执行器、定时器执行器
+- **多 Reactor**: 网络 Reactor、文件 Reactor、定时器 Reactor
+- **解耦设计**: Executor 和 Reactor 通过 Waker 间接通信
+- **精确唤醒**: 每种类型的 I/O 事件只唤醒对应的 Executor
+- **多线程执行**: 每个 Executor 在独立线程中运行
+
+### 文件结构
+
+```
+src/
+├── advanced_runtime.rs    # 高级运行时实现
+├── advanced_main.rs       # 高级架构演示主程序
+├── main.rs               # 原始架构演示
+└── runtime/              # 原始运行时实现
+    ├── executor.rs
+    └── reactor.rs
+```
+
+详细的使用说明请参考 `ADVANCED_DEMO.md` 文件。
