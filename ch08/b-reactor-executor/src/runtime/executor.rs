@@ -2,7 +2,7 @@ use crate::future::{Future, PollState};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     thread::{self, Thread},
 };
 
@@ -11,6 +11,9 @@ type Task = Box<dyn Future<Output = String>>;
 thread_local! {
     static CURRENT_EXEC: ExecutorCore = ExecutorCore::default();
 }
+
+// 全局的ready_queue，可以被任何线程访问
+static READY_QUEUE: OnceLock<Arc<Mutex<Vec<usize>>>> = OnceLock::new();
 
 #[derive(Default)]
 struct ExecutorCore {
@@ -50,7 +53,6 @@ impl Executor {
         Waker {
             id,
             thread: thread::current(),
-            ready_queue: CURRENT_EXEC.with(|q| q.ready_queue.clone()),
         }
     }
 
@@ -66,6 +68,11 @@ impl Executor {
     where
         F: Future<Output = String> + 'static,
     {
+        // 初始化全局ready_queue
+        CURRENT_EXEC.with(|exec| {
+            READY_QUEUE.set(exec.ready_queue.clone()).ok();
+        });
+
         spawn(future);
         loop {
             while let Some(id) = self.pop_ready() {
@@ -100,12 +107,11 @@ impl Executor {
 pub struct Waker {
     thread: Thread,
     id: usize,
-    ready_queue: Arc<Mutex<Vec<usize>>>,
 }
 
 impl Waker {
     pub fn wake(&self) {
-        self.ready_queue
+        READY_QUEUE.get().unwrap()
             .lock()
             .map(|mut q| q.push(self.id))
             .unwrap();
