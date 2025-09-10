@@ -2,6 +2,274 @@
 
 这是一个手写实现的 Rust 异步运行时系统，展示了异步编程的核心概念和实现原理。项目实现了类似 Tokio 的异步运行时架构，采用**单线程执行器 + 多线程 I/O 监听**的设计模式。
 
+## 核心概念解析
+
+### 核心组件定义
+
+#### 1. **Executor（执行器）**
+- **定义**：负责调度和执行 Task 的"管理者"
+- **职责**：
+  - 管理 Task 的生命周期（创建、调度、完成）
+  - 维护 Task 队列和就绪队列
+  - 处理 Task 的状态转换
+- **特点**：本身不执行具体业务逻辑，只负责任务管理
+- **实现**：`ExecutorCore` 结构体
+
+#### 2. **Task（任务）**
+- **定义**：实际要执行的具体任务/工作单元
+- **特点**：有具体的业务逻辑，需要被调度执行
+- **ID**：每个 Task 有唯一的 ID（0, 1, 2, ...）
+- **类型**：`type Task = Box<dyn Future<Output = String>>`
+- **例子**：HTTP 请求、文件读取、计算任务等
+
+#### 3. **Future（异步计算）**
+- **定义**：异步计算的抽象，表示一个可能在未来完成的计算
+- **特点**：通过 `poll` 方法推进执行，可能返回 `Ready` 或 `NotReady`
+- **实现**：实现 `Future` trait 的结构体
+- **例子**：`HttpGetFuture`、`JoinAll`、`Coroutine0`
+
+#### 4. **Waker（唤醒器）**
+- **定义**：用于唤醒等待中的 Task 的机制
+- **结构**：包含 Task ID 和 Thread 引用
+- **职责**：当 I/O 事件就绪时，将 Task ID 加入就绪队列并唤醒主线程
+- **实现**：`Waker` 结构体，包含 `wake()` 方法
+
+#### 5. **Reactor（反应器）**
+- **定义**：负责监听 I/O 事件并触发相应回调的组件
+- **职责**：
+  - 监听 I/O 事件（网络、文件等）
+  - 维护 I/O 事件与 Waker 的映射关系
+  - 当 I/O 就绪时调用对应的 Waker
+- **实现**：`Reactor` 结构体，运行在独立线程中
+
+#### 6. **EventLoop（事件循环）**
+- **定义**：Reactor 中的核心循环，持续监听和处理 I/O 事件
+- **流程**：
+  1. 调用 `poll.poll()` 监听 I/O 事件
+  2. 遍历就绪的事件 `events.iter()`
+  3. 提取 `Token(id)` 获取事件对应的 ID
+  4. 查找对应的 Waker 并调用 `waker.wake()`
+- **特点**：运行在独立线程中，与主线程异步协作
+
+#### 7. **ReadyQueue（就绪队列）**
+- **定义**：存储准备执行的 Task ID 的队列
+- **类型**：`Vec<usize>`，存储 Task ID
+- **操作**：
+  - **入队**：Waker 调用 `wake()` 时将 Task ID 加入
+  - **出队**：Executor 调度时取出 Task ID
+- **作用**：连接 Reactor 和 Executor 的桥梁
+
+### Task 和 Future 的关系
+
+在这个异步运行时系统中，**Task 和 Future 本质上是同一个概念**，但有不同的语义：
+
+#### 1. 类型定义
+
+```rust
+type Task = Box<dyn Future<Output = String>>;
+```
+
+- **Task** 是 `Box<dyn Future<Output = String>>` 的类型别名
+- **Task** 强调**可调度性**：被 Executor 管理的执行单元
+- **Future** 强调**异步性**：异步计算的抽象
+
+#### 2. 层次结构
+
+**一个 Task 可以包含多个子 Future**：
+
+```rust
+// 在 main.rs 中的例子
+struct Coroutine0 {
+    state: State0,  // 状态机管理多个子 Future
+}
+
+enum State0 {
+    Start,
+    Wait1(Box<dyn Future<Output = String>>),  // 子 Future 1
+    Wait2(Box<dyn Future<Output = String>>),  // 子 Future 2
+    Resolved,
+}
+```
+
+**层次关系**：
+```
+Task (Coroutine0) - Task ID = 0
+├── 子 Future 1 (HttpGetFuture) - Reactor ID = 1
+│   └── 执行: HTTP 请求 "/600/HelloAsyncAwait"
+└── 子 Future 2 (HttpGetFuture) - Reactor ID = 2
+    └── 执行: HTTP 请求 "/400/HelloAsyncAwait"
+```
+
+#### 3. 管理方式
+
+**Task 管理**：
+- 被 Executor 直接管理和调度
+- 有唯一的 Task ID
+- 存储在 `tasks` HashMap 中
+- 可以被暂停、恢复、完成
+
+**子 Future 管理**：
+- 被父 Task 内部管理
+- 通过状态机控制执行顺序
+- 有自己的 Reactor ID（用于 I/O 事件）
+- 不是独立的 Task
+
+#### 4. 执行流程
+
+```rust
+// 1. Task 被 Executor 调度
+while let Some(id) = self.pop_ready() {
+    let mut future = self.get_future(id);  // 获取 Task（本质上是 Future）
+    
+    // 2. Task 的 poll 方法被调用
+    match future.poll(&waker) {
+        PollState::NotReady => self.insert_task(id, future),  // 重新存储 Task
+        PollState::Ready(_) => continue,  // Task 完成
+    }
+}
+
+// 3. Task 内部调用子 Future
+// 在 Coroutine0::poll() 中
+match self.state {
+    State0::Wait1(ref mut f1) => {
+        match f1.poll(waker) {  // 调用子 Future 的 poll
+            PollState::Ready(txt) => { /* 子 Future 完成 */ }
+            PollState::NotReady => break PollState::NotReady,  // Task 也返回 NotReady
+        }
+    }
+}
+```
+
+#### 5. 设计优势
+
+**单 Task + 多子 Future 模式**：
+- **顺序执行**：子 Future 按状态机顺序执行
+- **状态管理**：通过状态机管理多个子 Future
+- **资源效率**：只需要管理一个 Task
+- **简单性**：避免复杂的多 Task 调度
+
+**与多 Task 模式对比**：
+```rust
+// 单 Task 模式（当前实现）
+tasks: {
+    0: Box<Coroutine0>  // 一个 Task 包含多个子 Future
+}
+
+// 多 Task 模式
+tasks: {
+    0: Box<Coroutine0>,
+    1: Box<HttpGetFuture>,  // 独立的 Task
+    2: Box<HttpGetFuture>,  // 独立的 Task
+}
+```
+
+### ID 系统设计
+
+系统使用**两套独立的 ID 系统**来管理不同的资源：
+
+#### 1. Task ID 系统
+
+```rust
+// 在 executor.rs 中
+struct ExecutorCore {
+    next_id: Cell<usize>,  // Executor 的 ID 计数器
+    tasks: RefCell<HashMap<usize, Task>>,  // ID -> Task 的映射
+}
+```
+
+**用途**：
+- 管理所有 Future 任务的生命周期
+- 用于任务调度和存储
+- 在单线程环境中使用（线程安全）
+
+**生命周期**：
+```rust
+// 1. 任务创建
+let id = e.next_id.get();  // 获取当前 ID (0, 1, 2, ...)
+e.tasks.borrow_mut().insert(id, Box::new(future));
+
+// 2. 任务执行
+while let Some(id) = self.pop_ready() {  // 从就绪队列获取 ID
+    let mut future = self.get_future(id);  // 通过 ID 获取 Future
+}
+
+// 3. 任务重新存储
+self.insert_task(id, future);  // 使用相同的 ID 重新存储
+```
+
+#### 2. Reactor ID 系统
+
+```rust
+// 在 reactor.rs 中
+struct Reactor {
+    next_id: AtomicUsize,  // Reactor 的 ID 计数器
+    wakers: Arc<Mutex<HashMap<usize, Waker>>>,  // ID -> Waker 的映射
+}
+```
+
+**用途**：
+- 管理 I/O 事件和 Waker 的映射
+- 用于跨线程通信（Reactor 在独立线程中运行）
+- 需要线程安全的 ID 生成
+
+**使用场景**：
+```rust
+// 在 HttpGetFuture::new() 中
+let id = reactor().next_id();  // 获取 Reactor ID (1, 2, 3, ...)
+
+// 在 HttpGetFuture::poll() 中
+runtime::reactor().register(stream, Interest::READABLE, self.id);
+runtime::reactor().set_waker(waker, self.id);
+```
+
+#### 3. 两套 ID 系统的关系
+
+**独立运行**：
+- Task ID 和 Reactor ID 完全独立
+- 各自从 0 开始计数
+- 不会产生冲突
+
+**协作机制**：
+```rust
+// Waker 包含 Task ID，用于唤醒任务
+pub struct Waker {
+    id: usize,  // Task ID
+    thread: Thread,
+}
+
+// 当 I/O 事件发生时
+impl Waker {
+    pub fn wake(&self) {
+        READY_QUEUE.get().unwrap()
+            .lock()
+            .map(|mut q| q.push(self.id))  // 使用 Task ID
+            .unwrap();
+        self.thread.unpark();
+    }
+}
+```
+
+**数据流**：
+```
+Reactor ID (1) -> I/O 事件 -> Waker -> Task ID (0) -> 任务唤醒
+```
+
+#### 4. 为什么需要两套 ID 系统？
+
+**职责分离**：
+- **Executor**：管理 Task 调度和生命周期
+- **Reactor**：管理 I/O 事件和唤醒机制
+
+**线程安全**：
+- Executor 在主线程中运行
+- Reactor 在独立线程中运行
+- 需要独立的 ID 空间避免竞争
+
+**设计清晰**：
+- 每套系统有自己的职责
+- 避免混合不同的概念
+- 便于调试和维护
+
 ## 项目架构
 
 ### 模块结构
@@ -60,6 +328,8 @@ fn get_waker(&self, id: usize) -> Waker {
 8. **循环往复**: 重复步骤 2-7，直到所有任务完成
 
 ## 执行流程图
+
+> **详细架构图表**：请参考 [ASYNC_RUNTIME_DIAGRAMS.md](./ASYNC_RUNTIME_DIAGRAMS.md) 文件，其中包含了 Task、子 Future、ID 系统等核心概念的详细图表。
 
 ```mermaid
 graph TD
