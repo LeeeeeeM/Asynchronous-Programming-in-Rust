@@ -147,9 +147,137 @@ struct Stack0 {
 3. **执行时序的重要性**：同样的代码在不同的执行时机可能产生不同的结果
 4. **优化代码的风险**：看似无害的优化可能破坏代码的内存安全假设
 
+## Pin 和 Unpin 概念详解
+
+### Unpin 类型
+
+**定义**：可以安全移动的类型，即使被 Pin 包装。
+
+**特点**：
+- 大多数类型都自动实现了 Unpin
+- 包括基本类型（i32, f64, bool）、标准库类型（String, Vec<T>）、大部分自定义结构体
+- 即使被 Pin 包装，仍然可以安全地移动被包装的内容
+
+**示例**：
+```rust
+struct UnpinStruct {
+    data: i32,
+    name: String,
+}
+// UnpinStruct 自动实现 Unpin
+
+let value = UnpinStruct { data: 42, name: "Hello".to_string() };
+let pinned = Box::pin(value);
+
+// 对于 Unpin 类型，即使被 Pin 包装，仍然可以安全地移动内容
+let moved_ref = Pin::get_mut(Pin::as_mut(&mut pinned)); // 安全！
+moved_ref.data = 100; // 可以修改
+```
+
+### !Unpin 类型
+
+**定义**：不能安全移动的类型，主要是自引用结构和某些异步 Future。
+
+**特点**：
+- 移动会导致悬空指针和内存安全问题
+- 必须使用 Pin 来保护，防止移动
+- 只能通过 Pin 的安全方法访问
+
+**示例**：
+```rust
+use std::ptr::NonNull;
+use std::marker::PhantomPinned;
+
+struct SelfReferential {
+    data: i32,
+    self_ref: Option<NonNull<SelfReferential>>, // 指向自身的指针
+    _pin: PhantomPinned, // 标记为 !Unpin
+}
+
+let value = SelfReferential::new(42);
+let pinned = Box::pin(value);
+SelfReferential::init(pinned.as_mut());
+
+// 对于 !Unpin 类型，不能直接移动被 Pin 的内容
+// let moved = Pin::get_mut(Pin::as_mut(&mut pinned)); // 编译错误！
+
+// 只能通过 Pin 的安全方法访问
+let data = SelfReferential::get_data(pinned.as_ref()); // 安全
+```
+
+### Pin 的作用
+
+**核心作用**：防止被包装的内容被移动，提供内存安全保证。
+
+**对不同类型的影响**：
+- **Unpin + Pin**：仍然可以移动被 Pin 的内容
+- **!Unpin + Pin**：不能移动被 Pin 的内容，必须通过 Pin 的方法访问
+
+**为什么需要 Pin**：
+1. 防止自引用结构被移动，避免悬空指针
+2. 确保 Future 在轮询过程中保持稳定
+3. 支持异步编程中的状态机
+4. 提供编译时和运行时的内存安全保证
+
+### 重要概念：!Unpin 类型没有 Pin 保护时的移动
+
+**编译器行为**：
+- **Unpin 类型**：可以安全移动，编译器允许
+- **!Unpin 类型**：编译器也允许移动，但**不保证安全**
+
+**后果自负的含义**：
+```rust
+// 没有 Pin 保护的 !Unpin 类型
+let mut dangerous = SelfReferential::new(42);
+// 如果设置了自引用指针...
+// dangerous.self_ref = Some(NonNull::from(&dangerous));
+
+// 移动后，自引用指针失效
+let moved = dangerous; // 编译器允许，但危险！
+
+// 如果后续代码尝试使用 self_ref，就是未定义行为
+// 可能崩溃、数据损坏、或产生不可预测的结果
+```
+
+**Pin 的作用**：
+```rust
+// 使用 Pin 保护
+let dangerous = SelfReferential::new(42);
+let pinned = Box::pin(dangerous);
+
+// 现在编译器会阻止危险的移动
+// let moved = Pin::get_mut(Pin::as_mut(&mut pinned)); // ❌ 编译错误！
+
+// 只能通过安全的方式访问
+let data = pinned.data; // ✅ 安全访问
+```
+
+### 常见误解澄清
+
+**❌ 错误理解**：
+- "引用和结构体不可以被安全移动"
+- "引用本身也是一种特殊的结构体"
+- "如果需要安全移动，则需要 Pin"
+- "!Unpin 类型完全不能移动"
+
+**✅ 正确理解**：
+- **引用可以安全移动**，大多数引用类型实现 Unpin
+- **引用不是结构体**，是指向数据的指针
+- **包含引用的结构体通常也可以安全移动**
+- **只有自引用结构（!Unpin）才需要 Pin 保护**
+- **Pin 的作用是防止移动，而不是启用移动**
+- **!Unpin 类型没有 Pin 保护时依然可以移动，但后果自负**
+
+### 实际应用场景
+
+1. **异步编程**：很多异步 Future 是 !Unpin 的，需要 Pin 保护
+2. **状态机**：自引用状态机需要 Pin 来保证内存安全
+3. **自引用数据结构**：包含指向自身指针的结构体需要 Pin 保护
+
 ## 相关文件
 
 - `src/main.rs` - 协程实现和unsafe指针操作
 - `src/runtime/executor.rs` - 执行器实现和优化代码
 - `src/http.rs` - HTTP异步操作
 - `src/future.rs` - Future trait定义
+- `demo/pin_unpin_example.rs` - Pin 和 Unpin 的详细示例
