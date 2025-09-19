@@ -19,13 +19,10 @@ struct ExecutorCore {
     next_id: Cell<usize>,
 }
 
-pub fn spawn<F>(future: F)
-where
-    F: Future<Output = String> + 'static,
-{
+pub fn spawn(future: Task) {
     CURRENT_EXEC.with(|e| {
         let id = e.next_id.get();
-        e.tasks.borrow_mut().insert(id, Box::pin(future));
+        e.tasks.borrow_mut().insert(id, future);
         e.ready_queue.lock().map(|mut q| q.push(id)).unwrap();
         e.next_id.set(id + 1);
     });
@@ -67,15 +64,20 @@ impl Executor {
         F: Future<Output = String> + 'static,
     {
         // ===== OPTIMIZATION, ASSUME READY
-        // let waker = self.get_waker(usize::MAX);
-        // let mut future = future;
-        // match future.poll(&waker) {
-        //     PollState::NotReady => (),
-        //     PollState::Ready(_) => return,
-        // }
+        let waker = self.get_waker(usize::MAX);
+        let mut pinned_future = Box::pin(future);
+        match pinned_future.as_mut().poll(&waker) {
+            PollState::NotReady => {
+                // Future is not ready, continue with normal flow
+            },
+            PollState::Ready(_) => {
+                // Future is already ready, return immediately
+                return;
+            }
+        }
         // ===== END
 
-        spawn(future);
+        spawn(pinned_future);
 
         loop {
             while let Some(id) = self.pop_ready() {
