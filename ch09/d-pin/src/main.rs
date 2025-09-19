@@ -4,10 +4,10 @@ use std::{
 };
 
 fn main() {
-    heap_pinning();
-    //stack_pinning_manual();
-    //stack_pinning_manual_problem();
-    //stack_pinning_macro();
+    // heap_pinning();
+    // stack_pinning_manual();
+    // stack_pinning_manual_problem();
+    stack_pinning_macro();
     //pin_projection();
 }
 
