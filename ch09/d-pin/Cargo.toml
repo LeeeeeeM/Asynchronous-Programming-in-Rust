@@ -5,5 +5,9 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[bin]]
+name = "pin_methods"
+path = "src/pin_methods_example.rs"
+
 [dependencies]
 rand = "0.8.5"

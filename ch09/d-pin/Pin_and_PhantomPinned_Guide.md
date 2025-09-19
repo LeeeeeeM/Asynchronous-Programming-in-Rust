@@ -316,9 +316,193 @@ swap(&mut x, &mut y);  // 编译通过，但破坏自引用
 // 还需要考虑其他实现（如 Default）的影响
 ```
 
-## 7. 总结
+## 7. Pin 创建方法详解
 
-### 7.1 关键要点
+### 7.1 Pin 创建方法对比
+
+#### Unpin 类型创建 Pin 的方法
+
+| 方法 | 优点 | 缺点 | 适用场景 |
+|------|------|------|----------|
+| `Pin::new(&mut value)` | 安全，编译器保证，最常用 | 只适用于 Unpin 类型 | 普通类型 (i32, String, Vec<T> 等) |
+| `Box::pin(value)` | 适用于所有类型，最常用 | 需要堆分配 | 所有类型，特别是 !Unpin 类型 |
+| `pin!` 宏 | 栈分配，性能好 | 需要 feature，作用域限制 | 局部变量，需要栈分配时 |
+| `Pin::new_unchecked(&mut value)` | 灵活，适用于所有类型 | unsafe，需要开发者保证安全 | 特殊场景，需要精确控制时 |
+
+#### !Unpin 类型创建 Pin 的方法
+
+| 方法 | 优点 | 缺点 | 适用场景 |
+|------|------|------|----------|
+| `Box::pin(value)` | 最常用，推荐方法，适用于所有类型 | 需要堆分配 | 所有类型，特别是 !Unpin 类型 |
+| `pin!` 宏 | 栈分配，性能好 | 需要 feature，作用域限制 | 局部变量，需要栈分配时 |
+| `Pin::new_unchecked(&mut value)` | 灵活，适用于所有类型 | unsafe，需要开发者保证安全 | 特殊场景，需要精确控制时 |
+| ❌ `Pin::new(&mut value)` | - | 不能使用，会导致编译错误 | - |
+
+### 7.2 关键区别总结
+
+```rust
+// Unpin 类型 - 可以使用多种方法
+let mut unpin_value = UnpinType::new(42);
+
+// ✅ 方法1: Pin::new() - 最常用
+let pinned1 = Pin::new(&mut unpin_value);
+
+// ✅ 方法2: Box::pin() - 也可以用于 Unpin 类型
+let pinned2 = Box::pin(unpin_value);
+
+// ✅ 方法3: Pin::new_unchecked() - unsafe 方法
+unsafe {
+    let pinned3 = Pin::new_unchecked(&mut unpin_value);
+}
+
+// !Unpin 类型 - 只能使用特定方法
+let mut not_unpin_value = NotUnpinType::new(42);
+
+// ✅ 方法1: Box::pin() - 最常用，推荐方法
+let pinned1 = Box::pin(not_unpin_value);
+
+// ✅ 方法2: Pin::new_unchecked() - unsafe 方法
+unsafe {
+    let pinned2 = Pin::new_unchecked(&mut not_unpin_value);
+}
+
+// ❌ 方法3: Pin::new() - 编译错误！
+// let pinned3 = Pin::new(&mut not_unpin_value); // 编译错误！
+```
+
+### 7.3 为什么 !Unpin 类型不能使用 Pin::new()？
+
+```rust
+// ❌ 这会导致编译错误
+let mut not_unpin = NotUnpinType::new(42);
+let pinned = Pin::new(&mut not_unpin); // 编译错误！
+```
+
+**原因：**
+- `Pin::new()` 要求类型实现 `Unpin` trait
+- `!Unpin` 类型没有实现 `Unpin` trait
+- 这是 Rust 的安全保证，防止自引用结构体被移动
+
+### 7.4 Pin 获取可变引用的方法
+
+| 方法 | 适用类型 | 安全性 | 说明 |
+|------|----------|--------|------|
+| `get_mut()` | Unpin 类型 | 安全，编译器保证 | 最安全，只适用于 Unpin 类型 |
+| `get_unchecked_mut()` | !Unpin 类型 | unsafe，需要开发者保证 | 适用于 !Unpin 类型 |
+| `as_mut()` | 所有类型 | 转换方法 | 将 Pin<Box<T>> 转换为 Pin<&mut T> |
+
+```rust
+// Unpin 类型使用 get_mut()
+let mut_ref = pinned_unpin.as_mut().get_mut();
+
+// !Unpin 类型使用 get_unchecked_mut()
+unsafe {
+    let mut_ref = pinned_not_unpin.as_mut().get_unchecked_mut();
+}
+```
+
+### 7.5 Box::pin() 的重要澄清
+
+**`Box::pin()` 不会改变内部类型的 Unpin 状态**
+
+```rust
+// Unpin 类型
+let unpin_value = String::from("hello");
+let pinned_unpin = Box::pin(unpin_value);
+// pinned_unpin 的类型是 Pin<Box<String>>
+// String 仍然是 Unpin 类型，可以使用 get_mut()
+
+// !Unpin 类型  
+let not_unpin_value = NotUnpinType::new(42);
+let pinned_not_unpin = Box::pin(not_unpin_value);
+// pinned_not_unpin 的类型是 Pin<Box<NotUnpinType>>
+// NotUnpinType 仍然是 !Unpin 类型，需要使用 get_unchecked_mut()
+```
+
+**关键区别：**
+
+| 内部类型 | `Box::pin()` 后 | 可以使用的获取方法 |
+|----------|----------------|-------------------|
+| `Unpin` 类型 | `Pin<Box<UnpinType>>` | `get_mut()` |
+| `!Unpin` 类型 | `Pin<Box<!UnpinType>>` | `get_unchecked_mut()` |
+
+**为什么 Pin<Box<T>> 本身是 !Unpin？**
+
+虽然 `Pin<Box<T>>` 本身是 `!Unpin` 类型（这是 Pin 的设计），但这不影响内部类型 T 的 `Unpin` 状态：
+
+```rust
+// Pin<Box<T>> 是 !Unpin 类型，但这不影响 T 的 Unpin 状态
+let pinned: Pin<Box<String>> = Box::pin(String::from("hello"));
+// 虽然 pinned 是 !Unpin，但内部的 String 仍然是 Unpin
+// 所以可以安全地使用 get_mut()
+```
+
+**总结：**
+- `Box::pin()` **不会**改变内部类型的 `Unpin` 状态
+- `Unpin` 类型用 `Box::pin()` 包装后，仍然可以使用 `get_mut()`
+- `!Unpin` 类型用 `Box::pin()` 包装后，仍然需要使用 `get_unchecked_mut()`
+- `Pin<Box<T>>` 本身是 `!Unpin` 类型，但这不影响内部类型 T 的 `Unpin` 状态
+
+### 7.6 什么时候需要 get_mut() 和 get_unchecked_mut()？
+
+**核心理解：需要结构体本体时才需要这些方法！**
+
+#### 7.6.1 简单判断规则
+
+- **需要结构体本体** → 用 `get_mut()` 或 `get_unchecked_mut()`
+- **不需要结构体本体** → 直接调用
+
+#### 7.6.2 具体使用场景
+
+**需要结构体本体的操作（需要 get_mut/get_unchecked_mut）：**
+
+```rust
+// 访问字段
+let this = pinned.as_mut().get_unchecked_mut();
+println!("{}", this.value);  // 访问字段 - 结构体本体
+
+// 修改字段
+this.value = 100;            // 修改字段 - 结构体本体
+
+// 调用结构体方法
+this.set_value(200);         // 调用 &mut self 方法 - 结构体本体
+
+// 模式匹配
+match this.state { ... }     // 模式匹配字段 - 结构体本体
+```
+
+**不需要结构体本体的操作（直接调用）：**
+
+```rust
+// Trait 方法
+pinned.as_mut().poll();      // poll 是 Future trait 的方法，不是结构体本体
+```
+
+#### 7.6.3 方法选择
+
+| 类型 | 方法 | 说明 |
+|------|------|------|
+| `Unpin` 类型 | `get_mut()` | 安全，编译器保证 |
+| `!Unpin` 类型 | `get_unchecked_mut()` | unsafe，需要开发者保证 |
+
+#### 7.6.4 关键理解
+
+- **结构体本体**：字段、结构体自己的方法 → 需要 `get_mut()` 或 `get_unchecked_mut()`
+- **Trait 方法**：如 `Future::poll` → 直接调用
+- **判断标准**：是否需要 `&mut T`（结构体本体）
+
+### 7.7 Pin 使用最佳实践
+
+1. **Unpin 类型**：优先使用 `Pin::new()`
+2. **!Unpin 类型**：优先使用 `Box::pin()`
+3. **性能敏感**：考虑使用 `pin!` 宏（栈分配）
+4. **特殊场景**：使用 `Pin::new_unchecked()`（需要 unsafe）
+5. **理解 Box::pin()**：它不会改变内部类型的 `Unpin` 状态
+6. **判断何时使用 get_mut**：需要结构体本体时才用
+
+## 8. 总结
+
+### 8.1 关键要点
 
 1. **`PhantomPinned`** 标记自引用结构体，防止移动
 2. **`Box::pin`** 提供编译器强制保护
@@ -326,18 +510,25 @@ swap(&mut x, &mut y);  // 编译通过，但破坏自引用
 4. **`Default` 实现** 会影响 `!Unpin` 标记的推断（重要！）
 5. **`swap` 内部使用 unsafe** 但提供安全 API
 6. **`PhantomPinned` 字段存在** 不等于结构体是 `!Unpin`
+7. **Pin 创建方法** 根据类型（Unpin/!Unpin）选择合适的方法
+8. **获取可变引用** 根据类型选择 `get_mut()` 或 `get_unchecked_mut()`
+9. **Box::pin() 行为** 不会改变内部类型的 `Unpin` 状态
+10. **何时使用 get_mut** 需要结构体本体时才用，trait 方法直接调用
 
-### 7.2 设计权衡
+### 8.2 设计权衡
 
 - **类型安全 vs 灵活性**：Rust 允许移动 `Unpin` 类型，但需要程序员负责
 - **编译器保护 vs 性能**：`Box::pin` 提供保护但有堆分配开销
 - **安全抽象**：用 `unsafe` 实现安全的 API
+- **方法选择**：根据类型和性能需求选择最合适的 Pin 创建方法
 
-### 7.3 使用建议
+### 8.3 使用建议
 
 - 自引用结构体优先使用 `Box::pin`
 - 避免实现 `Default` 除非必要
 - 理解 `Pin` 的语义和限制
 - 在栈上使用 Pin 时要格外小心
+- 根据类型选择合适的 Pin 创建和访问方法
+- 优先使用安全的方法，必要时才使用 unsafe 方法
 
 通过理解这些概念，可以更好地使用 Rust 的 Pin 系统来安全地处理自引用数据结构。
