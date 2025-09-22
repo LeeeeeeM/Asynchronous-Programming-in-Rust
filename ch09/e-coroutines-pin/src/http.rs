@@ -53,7 +53,7 @@ impl Future for HttpGetFuture {
         if self.stream.is_none() {
             println!("FIRST POLL - START OPERATION");
             self.write_request();
-            let stream = (&mut self).stream.as_mut().unwrap();
+            let stream = self.stream.as_mut().unwrap();
             runtime::reactor().register(stream, Interest::READABLE, id);
             runtime::reactor().set_waker(waker, self.id);
         }
@@ -63,7 +63,8 @@ impl Future for HttpGetFuture {
             match self.stream.as_mut().unwrap().read(&mut buff) {
                 Ok(0) => {
                     let s = String::from_utf8_lossy(&self.buffer).to_string();
-                    runtime::reactor().deregister(self.stream.as_mut().unwrap(), id);
+                    let stream = self.stream.as_mut().unwrap();
+                    runtime::reactor().deregister(stream, id);
                     break PollState::Ready(s);
                 }
                 Ok(n) => {
