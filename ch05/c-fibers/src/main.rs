@@ -1,6 +1,17 @@
+/// FIX 47
+/// Upstream fails on stable with E0554 (#![feature] not allowed on stable).
+/// rustc 1.89.0 compiler says naked_functions is already stable, so the feature gate must be removed
 //#![feature(naked_functions)]
-use std::arch::asm;
-use std::arch::naked_asm;
+
+/// FIX #31:
+/// Inline assembly blocks inside naked functions now need to use
+/// the `naked_asm` macro instead of the good old `asm` macro.
+/// The `noreturn` option is implicitly set by the `naked_asm`
+/// macro so there is no need to set that.
+///
+/// See: https://github.com/PacktPublishing/Asynchronous-Programming-in-Rust/issues/31
+/// for more information.
+use std::arch::{asm, naked_asm};
 
 const DEFAULT_STACK_SIZE: usize = 1024 * 1024 * 2;
 const MAX_THREADS: usize = 4;
@@ -142,7 +153,6 @@ fn guard() {
 
 #[unsafe(naked)]
 unsafe extern "C" fn skip() {
-    //naked_asm!("ret", options(noreturn))
     naked_asm!("ret")
 }
 
@@ -172,8 +182,7 @@ unsafe extern "C" fn switch() {
         "mov r12, [rsi + 0x20]",
         "mov rbx, [rsi + 0x28]",
         "mov rbp, [rsi + 0x30]",
-        "ret",
-//        options(noreturn)
+        "ret"
     );
 }
 
